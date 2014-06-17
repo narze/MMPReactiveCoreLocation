@@ -316,6 +316,10 @@ typedef NSInteger MMPRCLBeaconRegionSignalType;
 //        locationManager.activityType = activityType;
         locationManager.delegate = delegate;
         
+        if (beaconRegions.count > 0) {
+            [self stopMonitoringRegions];
+        }
+        
         [beaconRegions enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
             CLBeaconRegion *beaconRegion = (CLBeaconRegion *)obj;
             if ([beaconRegion isKindOfClass:[CLBeaconRegion class]]) {
@@ -350,6 +354,16 @@ typedef NSInteger MMPRCLBeaconRegionSignalType;
     } else {
         return signal;
     }
+}
+
+- (void)stopMonitoringRegions
+{
+    CLLocationManager *locationManager = [[CLLocationManager alloc] init];
+    NSSet *regionsToStopMonitoring = [locationManager.monitoredRegions copy];
+    
+    [regionsToStopMonitoring enumerateObjectsUsingBlock:^(id obj, BOOL *stop) {
+        [locationManager stopMonitoringForRegion:obj];
+    }];
 }
 
 #pragma mark One-time location signals
