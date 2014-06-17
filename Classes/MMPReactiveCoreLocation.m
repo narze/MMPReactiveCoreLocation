@@ -695,4 +695,9 @@ typedef NSInteger MMPRCLBeaconRegionSignalType;
 
 }
 
+- (void)locationManager:(CLLocationManager *)manager monitoringDidFailForRegion:(CLRegion *)region withError:(NSError *)error
+{
+    [_startMonitoringForRegionSubscriber sendError:error];
+}
+
 @end
