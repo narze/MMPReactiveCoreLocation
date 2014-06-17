@@ -35,16 +35,35 @@
 NSString * const MMPRCLSignalErrorDomain = @"MMPRCLSignalErrorDomain";
 const NSInteger MMPRCLSignalErrorServiceUnavailable = 1;
 
+enum {
+    MMPRCLBeaconRegionSignalTypeStartMonitoring,
+    MMPRCLBeaconRegionSignalTypeDidEnter,
+    MMPRCLBeaconRegionSignalTypeDidExit
+};
+typedef NSInteger MMPRCLBeaconRegionSignalType;
+
 /**
  *  Delegate for custom location request.
  */
 @interface MMPSignalDelegate : NSObject<CLLocationManagerDelegate>
 
-@property(nonatomic, weak) id<RACSubscriber>subscriber;
+@property(nonatomic, weak) id<RACSubscriber>subscriber, startMonitoringForRegionSubscriber, didEnterRegionSubscriber, didExitRegionSubscriber;
 @property(assign, nonatomic) NSTimeInterval locationAgeLimit;
 @property(assign, nonatomic) BOOL signalOnce;
 
 - (instancetype)initWithSubscriber:(id<RACSubscriber>)subscriber
+                  locationAgeLimit:(NSTimeInterval)locationAgeLimit
+                        signalOnce:(BOOL)signalOnce;
+
+- (instancetype)initWithStartMotitoringSubscriber:(id<RACSubscriber>)subscriber
+                  locationAgeLimit:(NSTimeInterval)locationAgeLimit
+                        signalOnce:(BOOL)signalOnce;
+
+- (instancetype)initWithDidEnterRegionSubscriber:(id<RACSubscriber>)subscriber
+                  locationAgeLimit:(NSTimeInterval)locationAgeLimit
+                        signalOnce:(BOOL)signalOnce;
+
+- (instancetype)initWithDidExitRegionSubscriber:(id<RACSubscriber>)subscriber
                   locationAgeLimit:(NSTimeInterval)locationAgeLimit
                         signalOnce:(BOOL)signalOnce;
 
@@ -252,6 +271,87 @@ const NSInteger MMPRCLSignalErrorServiceUnavailable = 1;
     }
 }
 
+#pragma mark iBeacon location signal
+- (RACSignal *)iBeaconLocationSignalWithBeaconRegions:(NSArray *)beaconRegions
+             pausesLocationUpdatesAutomatically:(BOOL)pausesLocationUpdatesAutomatically
+                                 distanceFilter:(CLLocationDistance)distanceFilter
+                                desiredAccuracy:(CLLocationAccuracy)desiredAccuracy
+                                   activityType:(CLActivityType)activityType
+                             locationUpdateType:(MMPRCLLocationUpdateType)locationUpdateType
+                               locationAgeLimit:(NSTimeInterval)locationAgeLimit
+                                        timeout:(NSTimeInterval)timeout
+                                     signalOnce:(BOOL)signalOnce
+                         beaconRegionSignalType:(MMPRCLBeaconRegionSignalType)signalType
+{
+    @weakify(self)
+    
+    RACSignal *signal = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
+        
+        @strongify(self)
+        
+        CLLocationManager *locationManager = [[CLLocationManager alloc] init];
+        MMPSignalDelegate *delegate = nil;
+        if (signalType == MMPRCLBeaconRegionSignalTypeStartMonitoring) {
+            delegate = [[MMPSignalDelegate alloc] initWithStartMotitoringSubscriber:subscriber
+                                                                   locationAgeLimit:locationAgeLimit
+                                                                         signalOnce:signalOnce];
+        } else if (signalType == MMPRCLBeaconRegionSignalTypeDidEnter) {
+            delegate = [[MMPSignalDelegate alloc] initWithDidEnterRegionSubscriber:subscriber
+                                                                   locationAgeLimit:locationAgeLimit
+                                                                         signalOnce:signalOnce];
+        } else if (signalType == MMPRCLBeaconRegionSignalTypeDidExit) {
+            delegate = [[MMPSignalDelegate alloc] initWithDidExitRegionSubscriber:subscriber
+                                                                   locationAgeLimit:locationAgeLimit
+                                                                         signalOnce:signalOnce];
+        } else {
+            NSLog(@"[WARN] invalid signal type");
+        }
+        
+        // so that the delegate can be retained
+        [self.singleSignalDelegates addObject:delegate];
+        
+//        locationManager.pausesLocationUpdatesAutomatically = pausesLocationUpdatesAutomatically;
+//        locationManager.distanceFilter = distanceFilter;
+//        locationManager.desiredAccuracy = desiredAccuracy;
+//        locationManager.activityType = activityType;
+        locationManager.delegate = delegate;
+        
+        [beaconRegions enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
+            CLBeaconRegion *beaconRegion = (CLBeaconRegion *)obj;
+            if ([beaconRegion isKindOfClass:[CLBeaconRegion class]]) {
+                [locationManager startMonitoringForRegion:beaconRegion];
+            } else {
+                NSLog(@"[WARN] non CLBeaconRegion type : %@, cannot start monitor", beaconRegion);
+            }
+        }];
+        
+        MMPRxCL_LOG(@"iBeacon CL manager started")
+        
+        return [RACDisposable disposableWithBlock:^{
+            [beaconRegions enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
+                CLBeaconRegion *beaconRegion = (CLBeaconRegion *)obj;
+                if ([beaconRegion isKindOfClass:[CLBeaconRegion class]]) {
+                    [locationManager stopMonitoringForRegion:beaconRegion];
+                } else {
+                    NSLog(@"[WARN] non CLBeaconRegion type : %@, cannot stop monitor", beaconRegion);
+                }
+            }];
+            
+            locationManager.delegate = nil; // fix delegate leak bug
+            
+            [self.singleSignalDelegates removeObject:delegate];
+            
+            MMPRxCL_LOG(@"iBeacon CL manager stopped, number of delegates = %d", [self.singleSignalDelegates count])
+        }];
+    }];
+    
+    if (timeout > 0) {
+        return [signal timeout:timeout onScheduler:[RACScheduler scheduler]];
+    } else {
+        return signal;
+    }
+}
+
 #pragma mark One-time location signals
 
 - (RACSignal *)singleLocationSignal
@@ -345,6 +445,50 @@ const NSInteger MMPRCLSignalErrorServiceUnavailable = 1;
                                                                  signalOnce:NO];
 }
 
+#pragma mark Beacon region signals
+
+- (RACSignal *)beaconRegionSignalWithStartMonitoringBeaconRegions:(NSArray *)beaconRegionsArray
+{
+    return [self iBeaconLocationSignalWithBeaconRegions:beaconRegionsArray
+                     pausesLocationUpdatesAutomatically:_pausesLocationUpdatesAutomatically
+                                         distanceFilter:_distanceFilter
+                                        desiredAccuracy:_desiredAccuracy
+                                           activityType:_activityType
+                                     locationUpdateType:_locationUpdateType
+                                       locationAgeLimit:_locationAgeLimit
+                                                timeout:MMPRCL_LOCATION_TIMEOUT_DEFAULT
+                                             signalOnce:NO
+                                beaconRegionSignalType:MMPRCLBeaconRegionSignalTypeStartMonitoring];
+}
+
+- (RACSignal *)didEnterBeaconRegionSignal
+{
+    return [self iBeaconLocationSignalWithBeaconRegions:@[]
+                     pausesLocationUpdatesAutomatically:_pausesLocationUpdatesAutomatically
+                                         distanceFilter:_distanceFilter
+                                        desiredAccuracy:_desiredAccuracy
+                                           activityType:_activityType
+                                     locationUpdateType:_locationUpdateType
+                                       locationAgeLimit:_locationAgeLimit
+                                                timeout:MMPRCL_LOCATION_TIMEOUT_DEFAULT
+                                             signalOnce:NO
+                                 beaconRegionSignalType:MMPRCLBeaconRegionSignalTypeDidEnter];
+}
+
+- (RACSignal *)didExitBeaconRegionSignal
+{
+    return [self iBeaconLocationSignalWithBeaconRegions:@[]
+                     pausesLocationUpdatesAutomatically:_pausesLocationUpdatesAutomatically
+                                         distanceFilter:_distanceFilter
+                                        desiredAccuracy:_desiredAccuracy
+                                           activityType:_activityType
+                                     locationUpdateType:_locationUpdateType
+                                       locationAgeLimit:_locationAgeLimit
+                                                timeout:MMPRCL_LOCATION_TIMEOUT_DEFAULT
+                                             signalOnce:NO
+                                 beaconRegionSignalType:MMPRCLBeaconRegionSignalTypeDidExit];
+}
+
 #pragma mark CLLocationManagerDelegate implementation
 
 - (void)locationManager:(CLLocationManager *)manager didUpdateLocations:(NSArray *)locations
@@ -405,6 +549,42 @@ const NSInteger MMPRCLSignalErrorServiceUnavailable = 1;
     return self;
 }
 
+- (instancetype)initWithStartMotitoringSubscriber:(id<RACSubscriber>)subscriber
+                                 locationAgeLimit:(NSTimeInterval)locationAgeLimit
+                                       signalOnce:(BOOL)signalOnce
+{
+    if (self = [super init]) {
+        self.startMonitoringForRegionSubscriber = subscriber;
+        self.locationAgeLimit = locationAgeLimit;
+        self.signalOnce = signalOnce;
+    }
+    return self;
+}
+
+- (instancetype)initWithDidEnterRegionSubscriber:(id<RACSubscriber>)subscriber
+                                locationAgeLimit:(NSTimeInterval)locationAgeLimit
+                                      signalOnce:(BOOL)signalOnce
+{
+    if (self = [super init]) {
+        self.didEnterRegionSubscriber = subscriber;
+        self.locationAgeLimit = locationAgeLimit;
+        self.signalOnce = signalOnce;
+    }
+    return self;
+}
+
+- (instancetype)initWithDidExitRegionSubscriber:(id<RACSubscriber>)subscriber
+                                locationAgeLimit:(NSTimeInterval)locationAgeLimit
+                                      signalOnce:(BOOL)signalOnce
+{
+    if (self = [super init]) {
+        self.didExitRegionSubscriber = subscriber;
+        self.locationAgeLimit = locationAgeLimit;
+        self.signalOnce = signalOnce;
+    }
+    return self;
+}
+
 #pragma mark CLLocationManagerDelegate implementation
 
 - (void)locationManager:(CLLocationManager *)manager didUpdateLocations:(NSArray *)locations
@@ -447,6 +627,58 @@ const NSInteger MMPRCLSignalErrorServiceUnavailable = 1;
                                                    code:MMPRCLSignalErrorServiceUnavailable
                                                userInfo:nil]];
     }
+}
+
+- (void)locationManager:(CLLocationManager *)manager didStartMonitoringForRegion:(CLRegion *)region
+{
+    [_startMonitoringForRegionSubscriber sendNext:[region copy]];
+    
+    if (_signalOnce) {
+        [_startMonitoringForRegionSubscriber sendCompleted];
+    }
+}
+
+- (void)locationManager:(CLLocationManager *)manager didEnterRegion:(CLRegion *)region
+{
+    [_didEnterRegionSubscriber sendNext:[region copy]];
+    
+    if (_signalOnce) {
+        [_didEnterRegionSubscriber sendCompleted];
+    }
+}
+
+- (void)locationManager:(CLLocationManager *)manager didExitRegion:(CLRegion *)region
+{
+    [_didExitRegionSubscriber sendNext:[region copy]];
+    
+    if (_signalOnce) {
+        [_didExitRegionSubscriber sendCompleted];
+    }
+}
+
+- (void)locationManager:(CLLocationManager *)manager didDetermineState:(CLRegionState)state forRegion:(CLRegion *)region
+{
+    if(state == CLRegionStateInside)
+    {
+        [_didEnterRegionSubscriber sendNext:[region copy]];
+        
+        if (_signalOnce) {
+            [_didEnterRegionSubscriber sendCompleted];
+        }
+    }
+    else if(state == CLRegionStateOutside)
+    {
+        [_didExitRegionSubscriber sendNext:[region copy]];
+        
+        if (_signalOnce) {
+            [_didExitRegionSubscriber sendCompleted];
+        }
+    }
+    else
+    {
+        return;
+    }
+
 }
 
 @end

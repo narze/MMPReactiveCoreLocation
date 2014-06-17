@@ -281,4 +281,15 @@ typedef NSInteger MMPRCLLocationUpdateType;
                                                      locationUpdateType:(MMPRCLLocationUpdateType)locationUpdateType
                                                        locationAgeLimit:(NSTimeInterval)locationAgeLimit;
 
+/**---------------------------------------------------------------------------------------
+ * @name Beacon region signals
+ *  ---------------------------------------------------------------------------------------
+ */
+
+- (RACSignal *)beaconRegionSignalWithStartMonitoringBeaconRegions:(NSArray *)beaconArray;
+
+- (RACSignal *)didEnterBeaconRegionSignal;
+
+- (RACSignal *)didExitBeaconRegionSignal;
+
 @end
